@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 interface InfraStatus {
+  environment: string;
   database: { connected: boolean; type: string; host: string };
   redis: { enabled: boolean; connected: boolean; host: string; port: number };
   queue: {
@@ -177,6 +178,7 @@ export class InfraController {
     const browserArgs = this.configService.get<string>('engine.browserArgs', '--no-sandbox --disable-gpu');
 
     return {
+      environment: process.env.NODE_ENV || 'development',
       database: { connected: dbConnected, type: dbType, host: dbHost },
       redis: { enabled: redisEnabled, connected: redisConnected, host: redisHost, port: redisPort },
       queue: {

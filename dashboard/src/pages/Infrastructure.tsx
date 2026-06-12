@@ -136,7 +136,7 @@ export function Infrastructure() {
 
   const [serverConfig, setServerConfig] = useState<ServerConfig>({
     port: '2785',
-    nodeEnv: 'development',
+    nodeEnv: 'production',
     domain: 'localhost',
     dashboardPort: '2886',
     baseUrl: '',
@@ -158,6 +158,11 @@ export function Infrastructure() {
   useEffect(() => {
     if (!infraStatus) return;
 
+    setServerConfig(prev => ({
+      ...prev,
+      nodeEnv: infraStatus.environment === 'production' ? 'production' : 'development',
+    }));
+
     setDbConfig(prev => ({
       ...prev,
       type: (infraStatus.database.type as 'sqlite' | 'postgres') || 'sqlite',
@@ -170,6 +175,7 @@ export function Infrastructure() {
       port: String(infraStatus.redis.port),
       connected: infraStatus.redis.connected,
     }));
+    setRedisEnabled(infraStatus.redis.enabled);
 
     setStorageConfig(prev => ({
       ...prev,
