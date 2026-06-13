@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { Client, LocalAuth, MessageMedia } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode';
 import * as path from 'path';
+import * as fs from 'fs';
 import {
   IWhatsAppEngine,
   EngineStatus,
@@ -99,11 +100,36 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         },
       });
 
+      // Remove stale Chromium lock files left behind by an unclean shutdown
+      // (e.g. VPS/container restart). Otherwise Chromium refuses to launch with
+      // "The profile appears to be in use by another Chromium process".
+      this.cleanupLockFiles();
+
       this.setupEventHandlers();
       await this.client.initialize();
     } catch (error) {
       this.setStatus(EngineStatus.FAILED);
       throw error;
+    }
+  }
+
+  /**
+   * Delete leftover Chromium singleton lock files from the session profile.
+   * Safe to call before every launch: these files are recreated by Chromium
+   * on a clean start and only persist when the previous process was killed.
+   */
+  private cleanupLockFiles(): void {
+    try {
+      const profileDir = path.join(
+        path.resolve(this.config.sessionDataPath),
+        `session-${this.config.sessionId}`,
+      );
+      const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+      for (const lockFile of lockFiles) {
+        fs.rmSync(path.join(profileDir, lockFile), { force: true });
+      }
+    } catch (error) {
+      this.logger.warn('Failed to clean Chromium lock files', { error: String(error) });
     }
   }
 

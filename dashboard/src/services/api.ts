@@ -85,8 +85,9 @@ export interface HealthStatus {
 }
 
 export interface InfraStatus {
+  environment: string;
   database: { connected: boolean; type: string; host: string };
-  redis: { connected: boolean; host: string; port: number };
+  redis: { enabled: boolean; connected: boolean; host: string; port: number };
   queue: {
     enabled: boolean;
     messages: { pending: number; completed: number; failed: number };
