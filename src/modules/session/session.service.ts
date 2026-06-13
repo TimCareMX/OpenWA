@@ -24,6 +24,10 @@ interface ReconnectState {
   baseDelay: number;
 }
 
+// Delay before auto-resuming sessions on startup, so the app finishes
+// bootstrapping (DB, engine plugins) before launching Chromium instances.
+const STARTUP_RESUME_DELAY_MS = 5000;
+
 @Injectable()
 export class SessionService implements OnModuleDestroy, OnModuleInit {
   private readonly logger = createLogger('SessionService');
@@ -33,6 +37,11 @@ export class SessionService implements OnModuleDestroy, OnModuleInit {
 
   // Reconnection state per session
   private reconnectStates: Map<string, ReconnectState> = new Map();
+
+  // Set during graceful shutdown so engine teardown does not overwrite the
+  // persisted session status. This keeps active sessions marked READY in the DB
+  // so they can be auto-resumed on the next startup.
+  private isShuttingDown = false;
 
   constructor(
     @InjectRepository(Session, 'data')
@@ -57,6 +66,12 @@ export class SessionService implements OnModuleDestroy, OnModuleInit {
       SessionStatus.AUTHENTICATING,
     ];
 
+    // Capture sessions that were fully connected before the restart. These have
+    // persisted auth on disk, so they can be resumed without scanning a QR again.
+    const previouslyReady = await this.sessionRepository.find({
+      where: { status: SessionStatus.READY },
+    });
+
     const result = await this.sessionRepository.update(
       { status: In(activeStatuses) },
       { status: SessionStatus.DISCONNECTED },
@@ -68,9 +83,45 @@ export class SessionService implements OnModuleDestroy, OnModuleInit {
         affected: result.affected,
       });
     }
+
+    // Auto-resume previously connected sessions so the bot survives VPS/container
+    // restarts without manual intervention. Delayed so the app finishes booting
+    // before launching Chromium instances.
+    if (previouslyReady.length > 0) {
+      this.logger.log(`Auto-resuming ${previouslyReady.length} session(s) after startup`, {
+        action: 'startup_resume',
+        count: previouslyReady.length,
+      });
+      setTimeout(() => {
+        void this.resumeSessions(previouslyReady.map(session => session.id));
+      }, STARTUP_RESUME_DELAY_MS);
+    }
+  }
+
+  /**
+   * Re-start sessions sequentially after a restart. Sequential (not parallel) to
+   * avoid launching many Chromium processes at once on a resource-limited VPS.
+   */
+  private async resumeSessions(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      try {
+        await this.start(id);
+        this.logger.log('Resumed session after startup', { sessionId: id, action: 'startup_resume_ok' });
+      } catch (error: unknown) {
+        this.logger.warn('Failed to auto-resume session after startup', {
+          sessionId: id,
+          action: 'startup_resume_failed',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   async onModuleDestroy(): Promise<void> {
+    // Flag shutdown so engine.destroy() teardown events don't flip the persisted
+    // status to disconnected (we want it to stay READY for auto-resume).
+    this.isShuttingDown = true;
+
     // Clean up all engines on shutdown
     for (const [sessionId, engine] of this.engines) {
       this.logger.log(`Destroying engine for session ${sessionId}`, {
@@ -313,6 +364,12 @@ export class SessionService implements OnModuleDestroy, OnModuleInit {
           });
       },
       onDisconnected: (reason: string): void => {
+        // Ignore disconnects triggered by our own shutdown teardown so the
+        // session stays READY in the DB and gets auto-resumed next startup.
+        if (this.isShuttingDown) {
+          return;
+        }
+
         this.logger.warn(`Session disconnected: ${reason}`, {
           sessionId: id,
           reason,
@@ -335,6 +392,11 @@ export class SessionService implements OnModuleDestroy, OnModuleInit {
         this.scheduleReconnect(id, session);
       },
       onStateChanged: (engineState: EngineStatus): void => {
+        // Don't persist state changes caused by shutdown teardown.
+        if (this.isShuttingDown) {
+          return;
+        }
+
         const statusMap: Record<EngineStatus, SessionStatus> = {
           [EngineStatus.DISCONNECTED]: SessionStatus.DISCONNECTED,
           [EngineStatus.INITIALIZING]: SessionStatus.INITIALIZING,
