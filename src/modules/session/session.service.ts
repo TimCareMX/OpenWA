@@ -332,6 +332,13 @@ export class SessionService implements OnModuleDestroy, OnModuleInit {
           connectedAt: new Date(),
           lastActiveAt: new Date(),
         });
+
+        // onReady writes READY directly (bypassing updateStatus), so dispatch the
+        // connection webhooks here. session.status mirrors every other transition;
+        // session.authenticated carries the connected phone/pushName.
+        this.eventsGateway.emitSessionStatus(id, SessionStatus.READY);
+        void this.webhookService.dispatch(id, 'session.status', { status: SessionStatus.READY });
+        void this.webhookService.dispatch(id, 'session.authenticated', { phone, pushName });
       },
       onMessage: (message): void => {
         this.logger.debug(`Message received from ${message.from}`, {
@@ -387,6 +394,9 @@ export class SessionService implements OnModuleDestroy, OnModuleInit {
         );
 
         void this.updateStatus(id, SessionStatus.DISCONNECTED);
+        // updateStatus already fires session.status='disconnected'; this carries
+        // the disconnect reason for subscribers that want it.
+        void this.webhookService.dispatch(id, 'session.disconnected', { reason });
 
         // Attempt to reconnect
         this.scheduleReconnect(id, session);
@@ -550,6 +560,10 @@ export class SessionService implements OnModuleDestroy, OnModuleInit {
     });
     // Emit real-time event to connected WebSocket clients
     this.eventsGateway.emitSessionStatus(id, status);
+    // Dispatch to HTTP webhooks subscribed to session.status. Every status
+    // transition funnels through here, so this is the single source of truth for
+    // connection-state webhooks. Idempotency dedupes repeated same-status emits.
+    void this.webhookService.dispatch(id, 'session.status', { status });
   }
 
   /**
